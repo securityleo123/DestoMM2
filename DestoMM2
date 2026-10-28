@@ -1,0 +1,792 @@
+-- Desto Hub | Murder Mystery 2
+-- loadstring(game:HttpGet("YOUR_RAW_URL"))()
+
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService     = game:GetService("TweenService")
+local lp               = Players.LocalPlayer
+local mouse            = lp:GetMouse()
+
+local char = lp.Character or lp.CharacterAdded:Wait()
+local hrp  = char:WaitForChild("HumanoidRootPart")
+local hum  = char:WaitForChild("Humanoid")
+lp.CharacterAdded:Connect(function(c)
+    char=c; hrp=c:WaitForChild("HumanoidRootPart"); hum=c:WaitForChild("Humanoid")
+end)
+
+-- ░░ MM2 ROLE DETECTION ░░
+-- MM2 stores roles in player.Character or via folder tags
+-- roles: "Murderer" | "Sheriff" | "Innocent"
+local function getRole(player)
+    if not player.Character then return "Innocent" end
+    -- MM2 tags via BoolValues or StringValue inside Character
+    if player.Character:FindFirstChild("mm2_murderer")
+    or player.Character:FindFirstChild("Murderer") then return "Murderer" end
+    if player.Character:FindFirstChild("mm2_sheriff")
+    or player.Character:FindFirstChild("Sheriff") then return "Sheriff" end
+    -- also check via MM2 GameScript values in workspace
+    local mm2 = workspace:FindFirstChild("GameScript") or workspace:FindFirstChild("MM2")
+    if mm2 then
+        local murderer = mm2:FindFirstChild("Murderer")
+        if murderer and tostring(murderer.Value) == player.Name then return "Murderer" end
+        local sheriff = mm2:FindFirstChild("Sheriff")
+        if sheriff and tostring(sheriff.Value) == player.Name then return "Sheriff" end
+    end
+    -- tool check: murderer carries knife, sheriff carries gun
+    for _,tool in ipairs(player.Character:GetChildren()) do
+        if tool:IsA("Tool") then
+            local n = tool.Name:lower()
+            if n:find("knife") or n:find("blade") then return "Murderer" end
+            if n:find("gun") or n:find("sheriff") or n:find("revolver") then return "Sheriff" end
+        end
+    end
+    return "Innocent"
+end
+
+local function getMurderers()
+    local t={}
+    for _,p in ipairs(Players:GetPlayers()) do
+        if p~=lp and getRole(p)=="Murderer" then table.insert(t,p) end
+    end
+    return t
+end
+
+local function getSheriffs()
+    local t={}
+    for _,p in ipairs(Players:GetPlayers()) do
+        if p~=lp and getRole(p)=="Sheriff" then table.insert(t,p) end
+    end
+    return t
+end
+
+-- ░░ STATE ░░
+local state = {
+    MurdererESP   = false,
+    SheriffESP    = false,
+    InnocentESP   = false,
+    HitboxExpander= false,
+    AutoGrabGun   = false,
+    AutoShootMurd = false,
+    ExposeMurd    = false,
+    ExposeShrf    = false,
+    KillAll       = false,
+}
+
+local flingTarget   = "Murderer" -- "Murderer"|"Sheriff"|"Random"|"Select"|"All"
+local selectedPlayer = nil
+local gotoTarget    = nil
+
+-- ░░ THEME — yellow (matches Forsaken hub) ░░
+local T = {
+    BG      = Color3.fromRGB(10,  9,   4),
+    PANEL   = Color3.fromRGB(20,  18,  6),
+    PANEL2  = Color3.fromRGB(30,  27,  8),
+    ACCENT  = Color3.fromRGB(255, 200,  0),
+    ACCENT2 = Color3.fromRGB(200, 150,  0),
+    GLOW    = Color3.fromRGB(255, 220, 60),
+    TEXT    = Color3.fromRGB(255, 250, 220),
+    SUBTEXT = Color3.fromRGB(180, 160, 90),
+    TON     = Color3.fromRGB(255, 200,  0),
+    TOFF    = Color3.fromRGB(45,  40,  15),
+    BORDER  = Color3.fromRGB(120, 90,  10),
+    WHITE   = Color3.fromRGB(255, 255, 255),
+    RED     = Color3.fromRGB(255,  60,  60),
+    GREEN   = Color3.fromRGB( 60, 220,  60),
+    BLUE    = Color3.fromRGB( 60, 160, 255),
+}
+
+-- ░░ GUI ROOT ░░
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name="DestoHubMM2"; ScreenGui.ResetOnSpawn=false
+ScreenGui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling; ScreenGui.DisplayOrder=999
+if syn and syn.protect_gui then
+    syn.protect_gui(ScreenGui); ScreenGui.Parent=game:GetService("CoreGui")
+elseif gethui then ScreenGui.Parent=gethui()
+else ScreenGui.Parent=game:GetService("CoreGui") end
+
+-- ░░ DRAG ░░
+local function makeDraggable(frame,handle)
+    local drag,ds,sp
+    handle.InputBegan:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1
+        or i.UserInputType==Enum.UserInputType.Touch then
+            drag=true;ds=i.Position;sp=frame.Position end
+    end)
+    UserInputService.InputChanged:Connect(function(i)
+        if drag and(i.UserInputType==Enum.UserInputType.MouseMovement
+                 or i.UserInputType==Enum.UserInputType.Touch) then
+            local d=i.Position-ds
+            frame.Position=UDim2.new(sp.X.Scale,sp.X.Offset+d.X,sp.Y.Scale,sp.Y.Offset+d.Y)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1
+        or i.UserInputType==Enum.UserInputType.Touch then drag=false end
+    end)
+end
+
+-- ░░ MAIN FRAME ░░
+local Main=Instance.new("Frame",ScreenGui)
+Main.Name="Main"; Main.Size=UDim2.new(0,500,0,620)
+Main.Position=UDim2.new(0.5,-250,0.5,-310)
+Main.BackgroundColor3=T.BG; Main.BorderSizePixel=0; Main.ClipsDescendants=true
+Instance.new("UICorner",Main).CornerRadius=UDim.new(0,14)
+local MS=Instance.new("UIStroke",Main); MS.Color=T.BORDER; MS.Thickness=1.5
+
+-- gradient bar
+local GBar=Instance.new("Frame",Main)
+GBar.Size=UDim2.new(1,0,0,3); GBar.BackgroundColor3=T.ACCENT; GBar.BorderSizePixel=0; GBar.ZIndex=10
+local GG=Instance.new("UIGradient",GBar)
+GG.Color=ColorSequence.new({
+    ColorSequenceKeypoint.new(0,  Color3.fromRGB(180,120,0)),
+    ColorSequenceKeypoint.new(0.5,Color3.fromRGB(255,220,60)),
+    ColorSequenceKeypoint.new(1,  Color3.fromRGB(180,120,0)),
+})
+RunService.Heartbeat:Connect(function() GG.Offset=Vector2.new((tick()*0.3)%1,0) end)
+
+-- ░░ TITLE BAR ░░
+local TB=Instance.new("Frame",Main)
+TB.Size=UDim2.new(1,0,0,52); TB.Position=UDim2.new(0,0,0,3)
+TB.BackgroundColor3=T.PANEL; TB.BorderSizePixel=0
+Instance.new("UICorner",TB).CornerRadius=UDim.new(0,12)
+local TBF=Instance.new("Frame",TB)
+TBF.Size=UDim2.new(1,0,0.5,0); TBF.Position=UDim2.new(0,0,0.5,0)
+TBF.BackgroundColor3=T.PANEL; TBF.BorderSizePixel=0
+
+local LC=Instance.new("Frame",TB)
+LC.Size=UDim2.new(0,34,0,34); LC.Position=UDim2.new(0,12,0.5,-17)
+LC.BackgroundColor3=T.ACCENT2; LC.BorderSizePixel=0
+Instance.new("UICorner",LC).CornerRadius=UDim.new(1,0)
+local LCG=Instance.new("UIGradient",LC)
+LCG.Color=ColorSequence.new({
+    ColorSequenceKeypoint.new(0,Color3.fromRGB(255,220,60)),
+    ColorSequenceKeypoint.new(1,Color3.fromRGB(160,100,0)),
+}); LCG.Rotation=45
+local LT=Instance.new("TextLabel",LC)
+LT.Text="D"; LT.Font=Enum.Font.GothamBold; LT.TextSize=18
+LT.TextColor3=T.BG; LT.BackgroundTransparency=1; LT.Size=UDim2.new(1,0,1,0)
+
+local TL=Instance.new("TextLabel",TB)
+TL.Text="Desto Hub  |  Murder Mystery 2"; TL.Font=Enum.Font.GothamBold
+TL.TextSize=14; TL.TextColor3=T.TEXT; TL.BackgroundTransparency=1
+TL.Size=UDim2.new(1,-130,0,22); TL.Position=UDim2.new(0,54,0,8)
+TL.TextXAlignment=Enum.TextXAlignment.Left
+
+local SL=Instance.new("TextLabel",TB)
+SL.Text="MM2  •  v1.0"; SL.Font=Enum.Font.Gotham; SL.TextSize=10
+SL.TextColor3=T.GLOW; SL.BackgroundTransparency=1
+SL.Size=UDim2.new(1,-130,0,14); SL.Position=UDim2.new(0,54,0,30)
+SL.TextXAlignment=Enum.TextXAlignment.Left
+
+local function makeTBtn(icon,xOff)
+    local b=Instance.new("TextButton",TB)
+    b.Text=icon; b.Font=Enum.Font.GothamBold; b.TextSize=13
+    b.TextColor3=T.SUBTEXT; b.BackgroundColor3=T.PANEL2
+    b.Size=UDim2.new(0,26,0,26); b.Position=UDim2.new(1,xOff,0.5,-13)
+    b.AutoButtonColor=false
+    Instance.new("UICorner",b).CornerRadius=UDim.new(1,0)
+    b.MouseEnter:Connect(function() TweenService:Create(b,TweenInfo.new(0.15),{TextColor3=T.GLOW}):Play() end)
+    b.MouseLeave:Connect(function() TweenService:Create(b,TweenInfo.new(0.15),{TextColor3=T.SUBTEXT}):Play() end)
+    return b
+end
+local MinBtn=makeTBtn("−",-62); local CloseBtn=makeTBtn("✕",-32)
+makeDraggable(Main,TB)
+
+-- ░░ TAB BAR ░░
+local TBBG=Instance.new("Frame",Main)
+TBBG.Size=UDim2.new(1,-24,0,36); TBBG.Position=UDim2.new(0,12,0,60)
+TBBG.BackgroundColor3=T.PANEL2; TBBG.BorderSizePixel=0
+Instance.new("UICorner",TBBG).CornerRadius=UDim.new(0,10)
+local TBar=Instance.new("Frame",TBBG)
+TBar.Size=UDim2.new(1,-8,1,-8); TBar.Position=UDim2.new(0,4,0,4); TBar.BackgroundTransparency=1
+local TBLL=Instance.new("UIListLayout",TBar)
+TBLL.FillDirection=Enum.FillDirection.Horizontal
+TBLL.Padding=UDim.new(0,3); TBLL.SortOrder=Enum.SortOrder.LayoutOrder
+
+local Content=Instance.new("Frame",Main)
+Content.Name="Content"; Content.Size=UDim2.new(1,-24,1,-112)
+Content.Position=UDim2.new(0,12,0,104); Content.BackgroundTransparency=1
+
+-- ░░ TAB SYSTEM ░░
+local tabs={}
+local function newTab(name,icon,order)
+    local btn=Instance.new("TextButton",TBar)
+    btn.Text=icon.." "..name; btn.Font=Enum.Font.GothamSemibold; btn.TextSize=10
+    btn.TextColor3=T.SUBTEXT; btn.BackgroundColor3=T.PANEL2
+    btn.BackgroundTransparency=1; btn.Size=UDim2.new(0,86,1,0)
+    btn.AutoButtonColor=false; btn.LayoutOrder=order
+    Instance.new("UICorner",btn).CornerRadius=UDim.new(0,7)
+    local ind=Instance.new("Frame",btn)
+    ind.Size=UDim2.new(0.7,0,0,2); ind.Position=UDim2.new(0.15,0,1,-2)
+    ind.BackgroundColor3=T.ACCENT; ind.BorderSizePixel=0; ind.BackgroundTransparency=1
+    Instance.new("UICorner",ind).CornerRadius=UDim.new(1,0)
+    local frame=Instance.new("ScrollingFrame",Content)
+    frame.Size=UDim2.new(1,0,1,0); frame.BackgroundTransparency=1
+    frame.BorderSizePixel=0; frame.ScrollBarThickness=3
+    frame.ScrollBarImageColor3=T.ACCENT; frame.CanvasSize=UDim2.new(0,0,0,0)
+    frame.AutomaticCanvasSize=Enum.AutomaticSize.Y; frame.Visible=false
+    local lay=Instance.new("UIListLayout",frame)
+    lay.Padding=UDim.new(0,8); lay.SortOrder=Enum.SortOrder.LayoutOrder
+    local pad=Instance.new("UIPadding",frame); pad.PaddingTop=UDim.new(0,4)
+    tabs[name]={btn=btn,frame=frame,ind=ind}
+    btn.MouseButton1Click:Connect(function()
+        for _,t in pairs(tabs) do
+            t.frame.Visible=false
+            TweenService:Create(t.btn,TweenInfo.new(0.15),{TextColor3=T.SUBTEXT,BackgroundTransparency=1}):Play()
+            TweenService:Create(t.ind,TweenInfo.new(0.15),{BackgroundTransparency=1}):Play()
+        end
+        frame.Visible=true
+        TweenService:Create(btn,TweenInfo.new(0.15),{TextColor3=T.GLOW,BackgroundTransparency=0}):Play()
+        TweenService:Create(ind,TweenInfo.new(0.15),{BackgroundTransparency=0}):Play()
+    end)
+    return frame
+end
+
+local tabESP     = newTab("ESP",    "👁", 1)
+local tabCombat  = newTab("Combat", "⚔", 2)
+local tabFling   = newTab("Fling",  "💨", 3)
+local tabGoto    = newTab("Goto",   "📍", 4)
+local tabMisc    = newTab("Misc",   "⚙", 5)
+
+tabs["ESP"].frame.Visible=true
+tabs["ESP"].btn.TextColor3=T.GLOW
+tabs["ESP"].btn.BackgroundTransparency=0
+tabs["ESP"].ind.BackgroundTransparency=0
+
+-- ░░ SECTION HEADER ░░
+local function secHead(parent,text,order)
+    local w=Instance.new("Frame",parent)
+    w.Size=UDim2.new(1,0,0,28); w.BackgroundColor3=Color3.fromRGB(28,22,4)
+    w.BorderSizePixel=0; w.LayoutOrder=order
+    Instance.new("UICorner",w).CornerRadius=UDim.new(0,7)
+    local s=Instance.new("UIStroke",w); s.Color=T.BORDER; s.Thickness=1
+    local a=Instance.new("Frame",w)
+    a.Size=UDim2.new(0,3,0.7,0); a.Position=UDim2.new(0,0,0.15,0)
+    a.BackgroundColor3=T.GLOW; a.BorderSizePixel=0
+    Instance.new("UICorner",a).CornerRadius=UDim.new(1,0)
+    local l=Instance.new("TextLabel",w)
+    l.Text=text; l.Font=Enum.Font.GothamBold; l.TextSize=11
+    l.TextColor3=T.GLOW; l.BackgroundTransparency=1
+    l.Size=UDim2.new(1,-12,1,0); l.Position=UDim2.new(0,10,0,0)
+    l.TextXAlignment=Enum.TextXAlignment.Left
+end
+
+-- ░░ TOGGLE ░░
+local toggleRefs={}
+local function newToggle(parent,label,desc,key,order)
+    local row=Instance.new("Frame",parent)
+    row.Size=UDim2.new(1,0,0,62); row.BackgroundColor3=T.PANEL
+    row.BorderSizePixel=0; row.LayoutOrder=order
+    Instance.new("UICorner",row).CornerRadius=UDim.new(0,10)
+    local rs=Instance.new("UIStroke",row); rs.Color=Color3.fromRGB(55,44,8); rs.Thickness=1
+    local bar=Instance.new("Frame",row)
+    bar.Size=UDim2.new(0,3,0.65,0); bar.Position=UDim2.new(0,0,0.175,0)
+    bar.BackgroundColor3=T.TOFF; bar.BorderSizePixel=0
+    Instance.new("UICorner",bar).CornerRadius=UDim.new(1,0)
+    local lbl=Instance.new("TextLabel",row)
+    lbl.Text=label; lbl.Font=Enum.Font.GothamBold; lbl.TextSize=13
+    lbl.TextColor3=T.TEXT; lbl.BackgroundTransparency=1
+    lbl.Size=UDim2.new(1,-76,0,22); lbl.Position=UDim2.new(0,14,0,10)
+    lbl.TextXAlignment=Enum.TextXAlignment.Left
+    local sub=Instance.new("TextLabel",row)
+    sub.Text=desc; sub.Font=Enum.Font.Gotham; sub.TextSize=10
+    sub.TextColor3=T.SUBTEXT; sub.BackgroundTransparency=1
+    sub.Size=UDim2.new(1,-76,0,16); sub.Position=UDim2.new(0,14,0,34)
+    sub.TextXAlignment=Enum.TextXAlignment.Left
+    local badge=Instance.new("TextLabel",row)
+    badge.Text="OFF"; badge.Font=Enum.Font.GothamBold; badge.TextSize=9
+    badge.TextColor3=T.SUBTEXT; badge.BackgroundColor3=T.TOFF
+    badge.Size=UDim2.new(0,34,0,16); badge.Position=UDim2.new(1,-98,0.5,-24)
+    badge.TextXAlignment=Enum.TextXAlignment.Center; badge.BorderSizePixel=0
+    Instance.new("UICorner",badge).CornerRadius=UDim.new(1,0)
+    local pill=Instance.new("Frame",row)
+    pill.Size=UDim2.new(0,46,0,25); pill.Position=UDim2.new(1,-56,0.5,-12)
+    pill.BackgroundColor3=T.TOFF; pill.BorderSizePixel=0
+    Instance.new("UICorner",pill).CornerRadius=UDim.new(1,0)
+    local ps=Instance.new("UIStroke",pill); ps.Color=Color3.fromRGB(80,65,15); ps.Thickness=1
+    local knob=Instance.new("Frame",pill)
+    knob.Size=UDim2.new(0,19,0,19); knob.Position=UDim2.new(0,3,0.5,-9)
+    knob.BackgroundColor3=T.WHITE; knob.BorderSizePixel=0
+    Instance.new("UICorner",knob).CornerRadius=UDim.new(1,0)
+    local hb=Instance.new("TextButton",row)
+    hb.Size=UDim2.new(1,0,1,0); hb.BackgroundTransparency=1; hb.Text=""
+    local function refresh(val)
+        state[key]=val
+        TweenService:Create(pill,TweenInfo.new(0.2),{BackgroundColor3=val and T.TON or T.TOFF}):Play()
+        TweenService:Create(knob,TweenInfo.new(0.2),{Position=val and UDim2.new(1,-22,0.5,-9) or UDim2.new(0,3,0.5,-9)}):Play()
+        TweenService:Create(badge,TweenInfo.new(0.2),{BackgroundColor3=val and T.TON or T.TOFF,TextColor3=val and T.BG or T.SUBTEXT}):Play()
+        TweenService:Create(bar,TweenInfo.new(0.2),{BackgroundColor3=val and T.GLOW or T.TOFF}):Play()
+        badge.Text=val and "ON" or "OFF"
+    end
+    hb.MouseButton1Click:Connect(function() refresh(not state[key]) end)
+    toggleRefs[key]=refresh
+end
+
+-- ░░ ACTION BUTTON ░░
+local function newActionBtn(parent,label,color,order,callback)
+    local row=Instance.new("Frame",parent)
+    row.Size=UDim2.new(1,0,0,44); row.BackgroundColor3=T.PANEL
+    row.BorderSizePixel=0; row.LayoutOrder=order
+    Instance.new("UICorner",row).CornerRadius=UDim.new(0,10)
+    Instance.new("UIStroke",row).Color=Color3.fromRGB(55,44,8)
+    local btn=Instance.new("TextButton",row)
+    btn.Text=label; btn.Font=Enum.Font.GothamBold; btn.TextSize=13
+    btn.TextColor3=T.BG; btn.BackgroundColor3=color or T.ACCENT
+    btn.Size=UDim2.new(1,-20,0,30); btn.Position=UDim2.new(0,10,0.5,-15)
+    btn.BorderSizePixel=0; btn.AutoButtonColor=false
+    Instance.new("UICorner",btn).CornerRadius=UDim.new(0,7)
+    btn.MouseEnter:Connect(function()
+        TweenService:Create(btn,TweenInfo.new(0.15),{TextColor3=T.WHITE}):Play() end)
+    btn.MouseLeave:Connect(function()
+        TweenService:Create(btn,TweenInfo.new(0.15),{TextColor3=T.BG}):Play() end)
+    btn.MouseButton1Click:Connect(callback)
+    return btn
+end
+
+-- ░░ OPTION SELECTOR ░░
+local function newOptionRow(parent,label,options,default,order,onChange)
+    local row=Instance.new("Frame",parent)
+    row.Size=UDim2.new(1,0,0,70); row.BackgroundColor3=T.PANEL
+    row.BorderSizePixel=0; row.LayoutOrder=order
+    Instance.new("UICorner",row).CornerRadius=UDim.new(0,10)
+    Instance.new("UIStroke",row).Color=Color3.fromRGB(55,44,8)
+    local lbl=Instance.new("TextLabel",row)
+    lbl.Text=label; lbl.Font=Enum.Font.GothamBold; lbl.TextSize=12
+    lbl.TextColor3=T.TEXT; lbl.BackgroundTransparency=1
+    lbl.Size=UDim2.new(1,-10,0,20); lbl.Position=UDim2.new(0,10,0,6)
+    lbl.TextXAlignment=Enum.TextXAlignment.Left
+    local btnHolder=Instance.new("Frame",row)
+    btnHolder.Size=UDim2.new(1,-12,0,28); btnHolder.Position=UDim2.new(0,6,0,32)
+    btnHolder.BackgroundTransparency=1
+    local blay=Instance.new("UIListLayout",btnHolder)
+    blay.FillDirection=Enum.FillDirection.Horizontal; blay.Padding=UDim.new(0,4)
+    blay.SortOrder=Enum.SortOrder.LayoutOrder
+    local selected=default
+    local btns={}
+    for i,opt in ipairs(options) do
+        local b=Instance.new("TextButton",btnHolder)
+        b.Text=opt; b.Font=Enum.Font.GothamSemibold; b.TextSize=10
+        b.BackgroundColor3=opt==default and T.TON or T.TOFF
+        b.TextColor3=opt==default and T.BG or T.SUBTEXT
+        b.Size=UDim2.new(0,0,1,0); b.AutomaticSize=Enum.AutomaticSize.X
+        b.BorderSizePixel=0; b.LayoutOrder=i
+        local bp=Instance.new("UIPadding",b); bp.PaddingLeft=UDim.new(0,8); bp.PaddingRight=UDim.new(0,8)
+        Instance.new("UICorner",b).CornerRadius=UDim.new(0,6)
+        btns[opt]=b
+        b.MouseButton1Click:Connect(function()
+            selected=opt
+            for _,ob in pairs(btns) do
+                TweenService:Create(ob,TweenInfo.new(0.15),{BackgroundColor3=T.TOFF,TextColor3=T.SUBTEXT}):Play()
+            end
+            TweenService:Create(b,TweenInfo.new(0.15),{BackgroundColor3=T.TON,TextColor3=T.BG}):Play()
+            onChange(opt)
+        end)
+    end
+    return row
+end
+
+-- ░░ PLAYER LIST ROW (for Goto + Select Fling) ░░
+local function buildPlayerList(parent, startOrder, onSelect)
+    local listFrame=Instance.new("Frame",parent)
+    listFrame.Size=UDim2.new(1,0,0,0); listFrame.AutomaticSize=Enum.AutomaticSize.Y
+    listFrame.BackgroundTransparency=1; listFrame.LayoutOrder=startOrder
+    local lay=Instance.new("UIListLayout",listFrame)
+    lay.Padding=UDim.new(0,5); lay.SortOrder=Enum.SortOrder.LayoutOrder
+    local rowCache={}
+    local function refresh()
+        for _,r in pairs(rowCache) do r:Destroy() end; rowCache={}
+        local i=0
+        for _,p in ipairs(Players:GetPlayers()) do
+            if p~=lp then
+                i=i+1
+                local row=Instance.new("Frame",listFrame)
+                row.Size=UDim2.new(1,0,0,36); row.BackgroundColor3=T.PANEL2
+                row.BorderSizePixel=0; row.LayoutOrder=i
+                Instance.new("UICorner",row).CornerRadius=UDim.new(0,8)
+                local role=getRole(p)
+                local roleColor=role=="Murderer" and T.RED or role=="Sheriff" and T.BLUE or T.GREEN
+                local dot=Instance.new("Frame",row)
+                dot.Size=UDim2.new(0,8,0,8); dot.Position=UDim2.new(0,10,0.5,-4)
+                dot.BackgroundColor3=roleColor; dot.BorderSizePixel=0
+                Instance.new("UICorner",dot).CornerRadius=UDim.new(1,0)
+                local name=Instance.new("TextLabel",row)
+                name.Text=p.Name.." ["..role.."]"
+                name.Font=Enum.Font.GothamSemibold; name.TextSize=12
+                name.TextColor3=T.TEXT; name.BackgroundTransparency=1
+                name.Size=UDim2.new(1,-90,1,0); name.Position=UDim2.new(0,24,0,0)
+                name.TextXAlignment=Enum.TextXAlignment.Left
+                local selfBtn=Instance.new("TextButton",row)
+                selfBtn.Text="SELECT"; selfBtn.Font=Enum.Font.GothamBold; selfBtn.TextSize=10
+                selfBtn.BackgroundColor3=T.TON; selfBtn.TextColor3=T.BG
+                selfBtn.Size=UDim2.new(0,60,0,22); selfBtn.Position=UDim2.new(1,-68,0.5,-11)
+                selfBtn.BorderSizePixel=0
+                Instance.new("UICorner",selfBtn).CornerRadius=UDim.new(0,5)
+                selfBtn.MouseButton1Click:Connect(function() onSelect(p) end)
+                table.insert(rowCache,row)
+            end
+        end
+    end
+    refresh()
+    Players.PlayerAdded:Connect(refresh)
+    Players.PlayerRemoving:Connect(function() task.wait(0.1); refresh() end)
+    return listFrame
+end
+
+-- ░░░░░░░░░░ POPULATE TABS ░░░░░░░░░░
+
+-- ESP TAB
+secHead(tabESP,"ESP",1)
+newToggle(tabESP,"Murderer ESP",   "Highlights murderer through walls (red)",   "MurdererESP",  2)
+newToggle(tabESP,"Sheriff ESP",    "Highlights sheriff through walls (blue)",   "SheriffESP",   3)
+newToggle(tabESP,"Innocent ESP",   "Highlights innocents through walls (green)","InnocentESP",  4)
+newToggle(tabESP,"Hitbox Expander","Enlarges player HumanoidRootParts",         "HitboxExpander",5)
+
+-- name tags above heads
+secHead(tabESP,"NAME TAGS",6)
+newToggle(tabESP,"Expose Murderer","Broadcasts murderer name in chat",  "ExposeMurd", 7)
+newToggle(tabESP,"Expose Sheriff", "Broadcasts sheriff name in chat",   "ExposeShrf", 8)
+
+-- COMBAT TAB
+secHead(tabCombat,"COMBAT",1)
+newToggle(tabCombat,"Auto Grab Gun",
+    "Teleports gun to your character when it appears","AutoGrabGun",   2)
+newToggle(tabCombat,"Auto Shoot Murderer",
+    "Teleports to murderer on gun fire + auto shoots","AutoShootMurd", 3)
+newToggle(tabCombat,"Kill All (Murderer)",
+    "Teleport kill all players as murderer",          "KillAll",       4)
+
+-- FLING TAB
+secHead(tabFling,"FLING TARGET",1)
+newOptionRow(tabFling,"Who to fling",
+    {"Murderer","Sheriff","Random","All"},
+    "Murderer",2,
+    function(v) flingTarget=v end)
+
+secHead(tabFling,"SELECT PLAYER",3)
+local flingSelectLabel=Instance.new("TextLabel",tabFling)
+flingSelectLabel.Text="Selected: None"; flingSelectLabel.Font=Enum.Font.GothamSemibold
+flingSelectLabel.TextSize=11; flingSelectLabel.TextColor3=T.SUBTEXT
+flingSelectLabel.BackgroundTransparency=1; flingSelectLabel.Size=UDim2.new(1,0,0,20)
+flingSelectLabel.LayoutOrder=4; flingSelectLabel.TextXAlignment=Enum.TextXAlignment.Left
+
+buildPlayerList(tabFling,5,function(p)
+    selectedPlayer=p
+    flingSelectLabel.Text="Selected: "..p.Name
+    flingTarget="Select"
+    -- update option buttons visual manually
+end)
+
+newActionBtn(tabFling,"🚀  FLING NOW",T.ACCENT,20,function()
+    -- fling logic fires below
+    local targets={}
+    if flingTarget=="Murderer" then targets=getMurderers()
+    elseif flingTarget=="Sheriff" then targets=getSheriffs()
+    elseif flingTarget=="Random" then
+        local all={}
+        for _,p in ipairs(Players:GetPlayers()) do
+            if p~=lp then table.insert(all,p) end end
+        if #all>0 then table.insert(targets,all[math.random(#all)]) end
+    elseif flingTarget=="Select" then
+        if selectedPlayer then table.insert(targets,selectedPlayer) end
+    elseif flingTarget=="All" then
+        for _,p in ipairs(Players:GetPlayers()) do
+            if p~=lp then table.insert(targets,p) end end
+    end
+    for _,target in ipairs(targets) do
+        if target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+            local tHRP=target.Character.HumanoidRootPart
+            -- teleport to target, apply massive velocity
+            hrp.CFrame=tHRP.CFrame
+            task.wait(0.05)
+            tHRP.AssemblyLinearVelocity=Vector3.new(
+                math.random(-1,1)*9999,
+                9999,
+                math.random(-1,1)*9999
+            )
+            tHRP.AssemblyAngularVelocity=Vector3.new(9999,9999,9999)
+        end
+    end
+end)
+
+-- GOTO TAB
+secHead(tabGoto,"GOTO PLAYER",1)
+local gotoLabel=Instance.new("TextLabel",tabGoto)
+gotoLabel.Text="Select a player to teleport to"; gotoLabel.Font=Enum.Font.Gotham
+gotoLabel.TextSize=11; gotoLabel.TextColor3=T.SUBTEXT
+gotoLabel.BackgroundTransparency=1; gotoLabel.Size=UDim2.new(1,0,0,20)
+gotoLabel.LayoutOrder=2; gotoLabel.TextXAlignment=Enum.TextXAlignment.Left
+
+buildPlayerList(tabGoto,3,function(p)
+    gotoTarget=p
+    gotoLabel.Text="Teleporting to: "..p.Name
+    if p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+        hrp.CFrame=p.Character.HumanoidRootPart.CFrame*CFrame.new(0,0,3)
+    end
+end)
+
+-- shortcut buttons
+secHead(tabGoto,"QUICK GOTO",50)
+newActionBtn(tabGoto,"Goto Murderer",T.RED,51,function()
+    local m=getMurderers()
+    if m[1] and m[1].Character and m[1].Character:FindFirstChild("HumanoidRootPart") then
+        hrp.CFrame=m[1].Character.HumanoidRootPart.CFrame*CFrame.new(0,0,3)
+    end
+end)
+newActionBtn(tabGoto,"Goto Sheriff",T.BLUE,52,function()
+    local s=getSheriffs()
+    if s[1] and s[1].Character and s[1].Character:FindFirstChild("HumanoidRootPart") then
+        hrp.CFrame=s[1].Character.HumanoidRootPart.CFrame*CFrame.new(0,0,3)
+    end
+end)
+
+-- MISC TAB
+secHead(tabMisc,"STATUS",1)
+local miscKeys={"MurdererESP","SheriffESP","InnocentESP","HitboxExpander",
+                "AutoGrabGun","AutoShootMurd","KillAll","ExposeMurd","ExposeShrf"}
+for i,k in ipairs(miscKeys) do
+    local r=Instance.new("Frame",tabMisc)
+    r.Size=UDim2.new(1,0,0,32); r.BackgroundColor3=T.PANEL
+    r.BorderSizePixel=0; r.LayoutOrder=i
+    Instance.new("UICorner",r).CornerRadius=UDim.new(0,7)
+    local dot=Instance.new("Frame",r)
+    dot.Size=UDim2.new(0,8,0,8); dot.Position=UDim2.new(0,10,0.5,-4)
+    dot.BackgroundColor3=T.TOFF; dot.BorderSizePixel=0
+    Instance.new("UICorner",dot).CornerRadius=UDim.new(1,0)
+    local l=Instance.new("TextLabel",r)
+    l.Font=Enum.Font.GothamSemibold; l.TextSize=12; l.TextColor3=T.SUBTEXT
+    l.BackgroundTransparency=1; l.Size=UDim2.new(1,-24,1,0)
+    l.Position=UDim2.new(0,24,0,0); l.TextXAlignment=Enum.TextXAlignment.Left
+    RunService.Heartbeat:Connect(function()
+        local on=state[k]
+        l.Text=k.." — "..(on and "ACTIVE" or "OFF")
+        l.TextColor3=on and T.GLOW or T.SUBTEXT
+        TweenService:Create(dot,TweenInfo.new(0.15),{BackgroundColor3=on and T.GLOW or T.TOFF}):Play()
+    end)
+end
+
+-- ░░ MINIMIZE / CLOSE ░░
+local minimised=false; local fullH=620
+MinBtn.MouseButton1Click:Connect(function()
+    minimised=not minimised
+    TweenService:Create(Main,TweenInfo.new(0.28,Enum.EasingStyle.Quint),{
+        Size=minimised and UDim2.new(0,500,0,55) or UDim2.new(0,500,0,fullH)
+    }):Play()
+    MinBtn.Text=minimised and "+" or "−"
+end)
+CloseBtn.MouseButton1Click:Connect(function()
+    TweenService:Create(Main,TweenInfo.new(0.2),{Size=UDim2.new(0,500,0,0)}):Play()
+    task.delay(0.22,function() ScreenGui:Destroy() end)
+end)
+UserInputService.InputBegan:Connect(function(i,gp)
+    if gp then return end
+    if i.KeyCode==Enum.KeyCode.Insert then Main.Visible=not Main.Visible end
+end)
+
+-- ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+--   LOGIC LOOPS
+-- ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+
+-- ESP
+local espObjs={MurdererESP={},SheriffESP={},InnocentESP={}}
+local espColors={
+    MurdererESP=Color3.fromRGB(255,60,60),
+    SheriffESP =Color3.fromRGB(60,160,255),
+    InnocentESP=Color3.fromRGB(60,220,60),
+}
+local function clearESP(k)
+    for _,v in ipairs(espObjs[k]) do if v and v.Parent then v:Destroy() end end; espObjs[k]={}
+end
+local function makeHL(adornee,color,k)
+    if adornee:FindFirstChildOfClass("Highlight") then return end
+    local hl=Instance.new("Highlight")
+    hl.FillColor=color; hl.OutlineColor=T.GLOW
+    hl.FillTransparency=0.45; hl.OutlineTransparency=0
+    hl.Adornee=adornee; hl.Parent=adornee
+    table.insert(espObjs[k],hl)
+end
+
+-- nametag above head
+local nameTags={}
+local function refreshNameTags()
+    for p,tag in pairs(nameTags) do
+        if tag and tag.Parent then tag:Destroy() end end
+    nameTags={}
+    for _,p in ipairs(Players:GetPlayers()) do
+        if p~=lp and p.Character then
+            local role=getRole(p)
+            local shouldTag=(state.ExposeMurd and role=="Murderer")
+                         or (state.ExposeShrf and role=="Sheriff")
+            if shouldTag then
+                local head=p.Character:FindFirstChild("Head")
+                if head then
+                    local bg=Instance.new("BillboardGui",head)
+                    bg.Size=UDim2.new(0,120,0,30); bg.StudsOffset=Vector3.new(0,2.5,0)
+                    bg.AlwaysOnTop=true
+                    local tl=Instance.new("TextLabel",bg)
+                    tl.Text="["..role.."] "..p.Name
+                    tl.Font=Enum.Font.GothamBold; tl.TextSize=13
+                    tl.TextColor3=role=="Murderer" and T.RED or T.BLUE
+                    tl.BackgroundTransparency=1; tl.Size=UDim2.new(1,0,1,0)
+                    tl.TextStrokeTransparency=0
+                    nameTags[p]=bg
+                end
+            end
+        end
+    end
+end
+
+-- expose: broadcast in chat once on enable, not spam
+local exposedMurd={}
+local exposedShrf={}
+RunService.Heartbeat:Connect(function()
+    -- ESP
+    if state.MurdererESP then
+        clearESP("MurdererESP")
+        for _,p in ipairs(Players:GetPlayers()) do
+            if p~=lp and p.Character and getRole(p)=="Murderer" then
+                makeHL(p.Character,espColors.MurdererESP,"MurdererESP") end end
+    else clearESP("MurdererESP") end
+
+    if state.SheriffESP then
+        clearESP("SheriffESP")
+        for _,p in ipairs(Players:GetPlayers()) do
+            if p~=lp and p.Character and getRole(p)=="Sheriff" then
+                makeHL(p.Character,espColors.SheriffESP,"SheriffESP") end end
+    else clearESP("SheriffESP") end
+
+    if state.InnocentESP then
+        clearESP("InnocentESP")
+        for _,p in ipairs(Players:GetPlayers()) do
+            if p~=lp and p.Character and getRole(p)=="Innocent" then
+                makeHL(p.Character,espColors.InnocentESP,"InnocentESP") end end
+    else clearESP("InnocentESP") end
+
+    -- nametags
+    refreshNameTags()
+
+    -- expose murderer — chat broadcast once per unique player
+    if state.ExposeMurd then
+        for _,p in ipairs(getMurderers()) do
+            if not exposedMurd[p.UserId] then
+                exposedMurd[p.UserId]=true
+                local ok,_=pcall(function()
+                    game:GetService("ReplicatedStorage").DefaultChatSystemChatEvents
+                        .SayMessageRequest:FireServer(
+                            "🔪 MURDERER: "..p.Name.." | Desto Hub","All")
+                end)
+            end
+        end
+    else exposedMurd={} end
+
+    -- expose sheriff
+    if state.ExposeShrf then
+        for _,p in ipairs(getSheriffs()) do
+            if not exposedShrf[p.UserId] then
+                exposedShrf[p.UserId]=true
+                local ok,_=pcall(function()
+                    game:GetService("ReplicatedStorage").DefaultChatSystemChatEvents
+                        .SayMessageRequest:FireServer(
+                            "🔫 SHERIFF: "..p.Name.." | Desto Hub","All")
+                end)
+            end
+        end
+    else exposedShrf={} end
+
+    -- hitbox expander
+    if state.HitboxExpander then
+        for _,p in ipairs(Players:GetPlayers()) do
+            if p~=lp and p.Character then
+                local h=p.Character:FindFirstChild("HumanoidRootPart")
+                if h then h.Size=Vector3.new(8,8,8) end
+            end
+        end
+    end
+end)
+
+-- ░░ AUTO GRAB GUN ░░
+-- MM2 gun drops appear as a Tool in workspace named "Sheriff Gun" or similar
+-- We watch workspace for any Tool with "gun" in name and move it to lp backpack
+local grabbedGun=false
+workspace.DescendantAdded:Connect(function(obj)
+    if not state.AutoGrabGun then return end
+    if obj:IsA("Tool") then
+        local n=obj.Name:lower()
+        if n:find("gun") or n:find("revolver") or n:find("sheriff") then
+            if obj.Parent~=lp.Backpack and obj.Parent~=lp.Character then
+                task.wait(0.05)
+                obj.Parent=lp.Backpack
+                grabbedGun=true
+            end
+        end
+    end
+end)
+
+-- ░░ AUTO SHOOT MURDERER ░░
+-- Teleports Sam to murderer when murderer fires (tool activated)
+-- then equips gun and fires
+local autoShootConn={}
+local function setupAutoShoot()
+    for _,c in ipairs(autoShootConn) do c:Disconnect() end; autoShootConn={}
+    for _,p in ipairs(Players:GetPlayers()) do
+        if p~=lp and getRole(p)=="Murderer" and p.Character then
+            for _,tool in ipairs(p.Character:GetChildren()) do
+                if tool:IsA("Tool") then
+                    local c=tool.Activated:Connect(function()
+                        if not state.AutoShootMurd then return end
+                        -- teleport to murderer
+                        if p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+                            hrp.CFrame=p.Character.HumanoidRootPart.CFrame*CFrame.new(0,0,2.5)
+                        end
+                        -- equip and fire gun if in backpack
+                        task.wait(0.05)
+                        for _,t in ipairs(lp.Backpack:GetChildren()) do
+                            local tn=t.Name:lower()
+                            if tn:find("gun") or tn:find("revolver") or tn:find("sheriff") then
+                                lp.Character.Humanoid:EquipTool(t)
+                                task.wait(0.1)
+                                if t.Parent==lp.Character then
+                                    t:Activate()
+                                end
+                                break
+                            end
+                        end
+                    end)
+                    table.insert(autoShootConn,c)
+                end
+            end
+        end
+    end
+end
+
+RunService.Heartbeat:Connect(function()
+    if state.AutoShootMurd then setupAutoShoot() end
+end)
+
+-- ░░ KILL ALL (as murderer) ░░
+-- teleport-kill: move Sam's character on top of each player rapidly
+local killCooldown=0
+RunService.Heartbeat:Connect(function()
+    if not state.KillAll then return end
+    local now=tick(); if now-killCooldown<0.3 then return end
+    killCooldown=now
+    for _,p in ipairs(Players:GetPlayers()) do
+        if p~=lp and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+        and p.Character:FindFirstChild("Humanoid")
+        and p.Character.Humanoid.Health>0 then
+            hrp.CFrame=p.Character.HumanoidRootPart.CFrame
+            task.wait(0.05)
+            -- equip knife and activate
+            for _,t in ipairs(lp.Character:GetChildren()) do
+                if t:IsA("Tool") then
+                    local tn=t.Name:lower()
+                    if tn:find("knife") or tn:find("blade") then
+                        t:Activate(); break end
+                end
+            end
+            break -- one per tick, moves to next on next Heartbeat cycle
+        end
+    end
+end)
+
+print("[Desto Hub | MM2] loaded — INSERT toggles UI")
